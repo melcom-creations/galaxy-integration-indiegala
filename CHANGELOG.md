@@ -47,7 +47,7 @@ This release adds local installation support and playtime tracking for IndieGala
 
 ---
 
-## Version 2.0.1-64bit
+## Version 2.0.1-64bit (Unreleased)
 
 ### Overview for Version 2.0.1-64bit
 
