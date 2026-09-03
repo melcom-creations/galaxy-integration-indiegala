@@ -32,6 +32,7 @@ This release adds local installation support and playtime tracking for IndieGala
 
 ### Fixed in Version 2.0.2-64bit
 
+- **Install action was initially unavailable:** The plugin now reports Windows compatibility directly, allowing Galaxy to enable the context-menu Install action without waiting for unavailable IndieGala GamesDB metadata.
 - **Edge could start without exposing its generated debugging-port file:** The external login now reserves a private IPv4 loopback port and verifies the browser directly instead of depending on `DevToolsActivePort`, which current Edge versions may not create for an existing dedicated profile.
 - **Firefox defaulted to Edge:** Firefox now uses its native WebDriver BiDi interface for session verification instead of being skipped in favor of a Chromium-based fallback browser.
 - **Reconnect after changing the IndieGala account could fail:** The revised external-browser connection can reopen the dedicated login session without triggering the previous embedded-browser crash path.
