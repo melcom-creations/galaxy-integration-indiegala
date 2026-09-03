@@ -1,0 +1,17 @@
+{
+  "name": "Galaxy IndieGala plugin",
+  "platform": "indiegala",
+  "guid": "a1a85742-f3e0-42ae-bde9-64ab7d0321cf",
+  "version": "2.0.2-64bit",
+  "description": "IndieGala integration for GOG Galaxy 2.1+ (64-bit)",
+  "author": "melcom",
+  "url": "https://github.com/melcom-creations/galaxy-integration-indiegala",
+  "external_updater": {
+    "provider": "github-releases",
+    "repo": "melcom-creations/galaxy-integration-indiegala",
+    "releases_url": "https://github.com/melcom-creations/galaxy-integration-indiegala/releases",
+    "latest_release_api": "https://api.github.com/repos/melcom-creations/galaxy-integration-indiegala/releases/latest",
+    "asset_pattern": "*-v*-64bit.zip"
+  },
+  "script": "plugin.py"
+}
