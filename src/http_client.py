@@ -1,7 +1,7 @@
 import logging
 
 import aiohttp
-from galaxy.api.errors import AuthenticationRequired
+from galaxy.api.errors import AuthenticationRequired, BackendError, TooManyRequests, TemporaryBlocked
 from galaxy.http import create_client_session
 from yarl import URL
 
@@ -44,14 +44,22 @@ class HTTPClient(object):
         :return:
         """
         logging.debug('Calling HTTPClient.get with %s', url)
-        response = await self.session.get(url)
-        text = await response.text()
+        async with self.session.get(url) as response:
+            if response.status == 401:
+                raise AuthenticationRequired()
+            if response.status == 429:
+                raise TooManyRequests()
+            if response.status == 403:
+                raise TemporaryBlocked("IndieGala denied the request; try again later")
+            if response.status >= 400:
+                raise BackendError("IndieGala request failed (HTTP {})".format(response.status))
+            text = await response.text()
         if '_Incapsula_Resource' in text:
             logging.debug('Incapsula challenge on request for %s', url)
-            raise AuthenticationRequired()
+            raise TemporaryBlocked("IndieGala requires a browser security check")
         if 'Profile locked' in text:
             logging.debug('IP check required on request for %s', url)
-            raise AuthenticationRequired()
+            raise TemporaryBlocked("IndieGala requires an IP security check")
         return text
 
     def update_cookies(self, cookies):

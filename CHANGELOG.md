@@ -4,6 +4,21 @@ All notable changes to this plugin will be documented in this file.
 
 ---
 
+## Version 2.0.3-64bit
+
+### Overview for Version 2.0.3-64bit
+
+This maintenance release distinguishes IndieGala service failures from authentication failures during startup and synchronization.
+
+### Fixed in Version 2.0.3-64bit
+
+- **Unnecessary login prompts:** Server-side exceptions, malformed JSON, and missing account identity fields now report a backend error instead of clearing the in-memory cookies and starting a new browser login. An explicit HTTP 401 response still requests authentication.
+- **Failed library imports:** Missing or malformed Showcase collections now report a backend error instead of an unhandled exception. The cached library is preserved when validation fails; a valid empty collection is still accepted.
+- **HTTP and security errors:** Server errors, rate limits, and security challenges are classified separately from expired sessions. HTTP responses are released reliably.
+- **Safer diagnostics:** Invalid account responses are no longer written in full to the plugin log.
+
+---
+
 ## Version 2.0.2-64bit
 
 ### Overview for Version 2.0.2-64bit

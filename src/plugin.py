@@ -69,6 +69,17 @@ GAME_TIME_CACHE_KEY = "indiegala_game_time_v1"
 LOCAL_STATUS_REFRESH_SECONDS = 1.0
 
 
+def _parse_user_response(text):
+    """Do not mistake an unavailable account endpoint for an expired session."""
+    try:
+        data = json.loads(text)
+    except (ValueError, TypeError) as error:
+        raise BackendError("IndieGala returned an invalid account response; try again later") from error
+    if not isinstance(data, dict) or data.get("status") == "failure":
+        raise BackendError("IndieGala could not provide account data; try again later")
+    return data
+
+
 def write_crash_log(err_msg):
     try:
         crash_file = Path(__file__).parent / "crash_log.txt"
@@ -196,8 +207,19 @@ class IndieGalaPlugin(Plugin):
     async def get_owned_games(self):
         try:
             text = await self.http_client.get(SHOWCASE_API)
-            data = json.loads(text)
-            games_json = data['showcase_content']['content']['user_collection']
+            data = _parse_user_response(text)
+            try:
+                games_json = data['showcase_content']['content']['user_collection']
+                if not isinstance(games_json, list):
+                    raise TypeError("Expected a collection list")
+                for item in games_json:
+                    if not isinstance(item, dict) or any(
+                        not isinstance(item.get(key), str) or not item[key].strip()
+                        for key in ('prod_slugged_name', 'prod_name')
+                    ):
+                        raise ValueError("Invalid collection entry")
+            except (KeyError, TypeError, ValueError) as error:
+                raise BackendError("IndieGala returned incomplete library data; try again later") from error
             result = []
             for game_json in games_json:
                 game = Game(
@@ -220,13 +242,21 @@ class IndieGalaPlugin(Plugin):
         try:
             text = await self.http_client.get(SHOWCASE_API)
             try:
-                data = json.loads(text)
+                data = _parse_user_response(text)
                 user_id = data['_indiegala_user_id']
                 username = data['_indiegala_username']
+                if (
+                    isinstance(user_id, bool)
+                    or not isinstance(user_id, (str, int))
+                    or not str(user_id).strip()
+                    or not isinstance(username, str)
+                    or not username.strip()
+                ):
+                    raise ValueError("Missing account identity")
                 return Authentication(str(user_id), str(username))
             except (json.JSONDecodeError, KeyError, TypeError, ValueError) as e:
-                logging.error("Fehler beim Parsen der Nutzerdaten. Server-Antwort war: %s. Fehler: %s", text, e)
-                raise AuthenticationRequired()
+                logging.warning("IndieGala returned incomplete account identity data")
+                raise BackendError("IndieGala returned incomplete account data; try again later") from e
         except Exception as e:
             write_crash_log("Fehler in get_user_info")
             raise

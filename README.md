@@ -103,6 +103,8 @@ For complete local removal, first disconnect the integration and close Galaxy co
 
 Restart Galaxy and try one synchronization. If the problem remains, collect a fresh log. A database reset is not required for this.
 
+Temporary IndieGala server errors or incomplete account responses are reported as service errors without automatically starting a new browser login. Wait and retry before disconnecting or resetting storage. A genuinely expired session may still require signing in again. Security-check errors may require reconnecting manually if retrying does not help.
+
 ### 🧪 Create a Fresh Diagnostic Log
 
 1. Close GOG Galaxy completely, including the system tray application.
