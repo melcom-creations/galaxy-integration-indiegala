@@ -4,6 +4,22 @@ All notable changes to this plugin will be documented in this file.
 
 ---
 
+## Version 2.0.4-64bit
+
+### Overview for Version 2.0.4-64bit
+
+This maintenance release restores session-expiry detection when IndieGala returns HTTP 200 with an account error instead of HTTP 401.
+
+### Fixed in Version 2.0.4-64bit
+
+- **Integration remained offline after session expiry:** If an account or library request returns a backend error, the plugin now checks the website's explicit `user_is_logged` status using its existing IndieGala session. A confirmed logged-out status requests authentication again, allowing the external-browser login workflow to resume.
+- **Temporary service errors remain separate:** A valid session, unavailable status check, or malformed status response does not automatically start a new login. Invalid library responses still leave the cached library untouched.
+- **Website session verification:** The status check uses the website request headers and its CSRF cookie/header pair. It does not access personal browser profiles.
+- **HTTP status handling:** The HTTP client now allows its own status classification to run; the bundled session factory previously raised HTTP exceptions before the plugin could handle 401, 403, and 429 responses.
+- **Expected errors generated crash reports:** Normal Galaxy service and authentication errors no longer create duplicate tracebacks in `crash_log.txt`; Galaxy's regular plugin log remains available for diagnostics.
+
+---
+
 ## Version 2.0.3-64bit
 
 ### Overview for Version 2.0.3-64bit

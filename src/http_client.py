@@ -1,4 +1,5 @@
 import logging
+import json
 
 import aiohttp
 from galaxy.api.errors import AuthenticationRequired, BackendError, TooManyRequests, TemporaryBlocked
@@ -7,6 +8,8 @@ from yarl import URL
 
 
 INDIEGALA_URL = URL("https://www.indiegala.com/")
+SESSION_STATUS_URL = "https://www.indiegala.com/ajax/user/get-data"
+WEB_USER_AGENT = "Mozilla/5.0"
 
 
 class CookieJar(aiohttp.CookieJar):
@@ -35,7 +38,7 @@ class HTTPClient(object):
         self.session = create_client_session(headers={
             'User-Agent': 'galaClient',
         },
-            cookie_jar=self.cookieJar)
+            cookie_jar=self.cookieJar, raise_for_status=False)
 
     async def get(self, url):
         """
@@ -44,7 +47,10 @@ class HTTPClient(object):
         :return:
         """
         logging.debug('Calling HTTPClient.get with %s', url)
-        async with self.session.get(url) as response:
+        return await self._request("GET", url)
+
+    async def _request(self, method, url, **kwargs):
+        async with self.session.request(method, url, **kwargs) as response:
             if response.status == 401:
                 raise AuthenticationRequired()
             if response.status == 429:
@@ -53,6 +59,8 @@ class HTTPClient(object):
                 raise TemporaryBlocked("IndieGala denied the request; try again later")
             if response.status >= 400:
                 raise BackendError("IndieGala request failed (HTTP {})".format(response.status))
+            if response.status != 200:
+                raise BackendError("IndieGala returned an unexpected HTTP status")
             text = await response.text()
         if '_Incapsula_Resource' in text:
             logging.debug('Incapsula challenge on request for %s', url)
@@ -61,6 +69,36 @@ class HTTPClient(object):
             logging.debug('IP check required on request for %s', url)
             raise TemporaryBlocked("IndieGala requires an IP security check")
         return text
+
+    async def is_session_authenticated(self):
+        """Confirm session expiry using the website's explicit login-status flag."""
+        headers = {"User-Agent": WEB_USER_AGENT}
+        # The website requires a CSRF cookie/header pair for this read-only POST.
+        # Use the same cookie jar as the account request, never another profile.
+        await self._request(
+            "GET", str(INDIEGALA_URL), headers=headers, allow_redirects=False,
+            timeout=aiohttp.ClientTimeout(total=12),
+        )
+        csrf_cookie = self.cookieJar.filter_cookies(INDIEGALA_URL).get("csrftoken")
+        if csrf_cookie is None or not csrf_cookie.value:
+            raise BackendError("IndieGala session status could not be verified")
+        headers.update({
+            "Referer": str(INDIEGALA_URL),
+            "X-CSRF-Token": csrf_cookie.value,
+            "X-CSRFToken": csrf_cookie.value,
+        })
+        text = await self._request(
+            "POST", SESSION_STATUS_URL, headers=headers, json={},
+            allow_redirects=False, timeout=aiohttp.ClientTimeout(total=12),
+        )
+        try:
+            data = json.loads(text)
+        except (ValueError, TypeError) as error:
+            raise BackendError("IndieGala returned an invalid session status") from error
+        status = data.get("user_is_logged") if isinstance(data, dict) else None
+        if not isinstance(status, bool):
+            raise BackendError("IndieGala returned an incomplete session status")
+        return status
 
     def update_cookies(self, cookies):
         self.cookieJar.update_cookies(cookies, INDIEGALA_URL)

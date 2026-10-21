@@ -53,6 +53,7 @@ from galaxy.api.plugin import Plugin, create_and_run_plugin
 from galaxy.api.consts import Platform, LicenseType, LocalGameState, OSCompatibility
 from galaxy.api.types import NextStep, Authentication, Game, LicenseInfo, LocalGame
 from galaxy.api.errors import AuthenticationRequired, InvalidCredentials, BackendError
+from galaxy.api.jsonrpc import ApplicationError
 
 from browser_auth import LocalBrowserAuthServer
 from game_time import GameTimeSyncResult, GameTimeTracker
@@ -81,6 +82,9 @@ def _parse_user_response(text):
 
 
 def write_crash_log(err_msg):
+    if isinstance(sys.exc_info()[1], ApplicationError):
+        # Expected service/authentication errors belong in Galaxy's regular log.
+        return
     try:
         crash_file = Path(__file__).parent / "crash_log.txt"
         with open(crash_file, "a", encoding="utf-8") as f:
@@ -234,6 +238,9 @@ class IndieGalaPlugin(Plugin):
             }
             self._store_library_cache()
             return result
+        except BackendError:
+            await self._check_session_after_backend_error()
+            raise
         except Exception as e:
             write_crash_log("Fehler in get_owned_games")
             raise
@@ -257,9 +264,19 @@ class IndieGalaPlugin(Plugin):
             except (json.JSONDecodeError, KeyError, TypeError, ValueError) as e:
                 logging.warning("IndieGala returned incomplete account identity data")
                 raise BackendError("IndieGala returned incomplete account data; try again later") from e
+        except BackendError:
+            await self._check_session_after_backend_error()
+            raise
         except Exception as e:
             write_crash_log("Fehler in get_user_info")
             raise
+
+    async def _check_session_after_backend_error(self):
+        authenticated = await self.http_client.is_session_authenticated()
+        if authenticated is False:
+            logging.info("IndieGala website confirms that the stored session is no longer logged in")
+            raise AuthenticationRequired()
+        logging.info("IndieGala session is still logged in; account/library service is unavailable")
 
     def _store_library_cache(self):
         self.persistent_cache.pop("credentials", None)
