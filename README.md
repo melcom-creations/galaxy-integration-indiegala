@@ -95,7 +95,7 @@ Firefox uses WebDriver BiDi; Chromium-based browsers use their debugging protoco
 | Data | Local location | Result of clicking **Disconnect** |
 |---|---|---|
 | IndieGala browser cookies used for authentication | Galaxy's credential area inside `%ProgramData%\GOG.com\Galaxy\storage\plugins\indiegala_a1a85742-f3e0-42ae-bde9-64ab7d0321cf-<Galaxy-user-id>-storage.db` | Removed by Galaxy |
-| Cached IndieGala library and locally tracked Game-Time | The normal cache area inside the same Galaxy plugin database | The local cache can remain |
+| Cached IndieGala library, its account identifier, and locally tracked Game-Time | The normal cache area inside the same Galaxy plugin database | The local cache can remain |
 | Configured IndieGala games folder | `%LOCALAPPDATA%\melcom-creations\GOG Galaxy Integrations\IndieGala\settings.json` | Remains |
 | Temporary login browser profile | `%TEMP%\melcom-indiegala-auth-<browser>-<random>\` | Removed after normal login completion or plugin shutdown |
 
@@ -107,7 +107,9 @@ For complete local removal, first disconnect the integration and close Galaxy co
 
 Restart Galaxy and try one synchronization. If the problem remains, collect a fresh log. A database reset is not required for this.
 
-If IndieGala returns an account or library error, the plugin checks whether the website still considers the saved session logged in. A confirmed expired session requests a new browser login. If the session is still valid or its status cannot be verified, a service error is reported instead. Wait and retry before disconnecting or resetting storage. Security-check errors may require reconnecting manually if retrying does not help.
+If IndieGala returns an account or library error, the plugin checks whether the website still considers the saved session logged in. A confirmed expired session requests a new browser login. If the status cannot be verified, the error is reported without assuming that the session has expired. Wait and retry before disconnecting or resetting storage. Security-check errors may require reconnecting manually if retrying does not help.
+
+Temporary account or library failures are retried up to three times, with recovery limited to 25 seconds per operation. If library recovery fails while the session is confirmed valid, the plugin can retain the complete library previously verified for that same account. The log clearly identifies use of the retained library. New games or other library changes appear after a later successful synchronization. A successful fresh import is required once to establish this account-bound fallback; expired or unverified sessions and security blocks still report errors. The diagnostic log identifies invalid fields and HTTP status codes without recording response contents or credentials.
 
 ### 🧪 Create a Fresh Diagnostic Log
 

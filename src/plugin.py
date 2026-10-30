@@ -32,7 +32,7 @@ if os.path.isdir(modules_dir):
         sys.path.insert(0, resolved_modules_dir)
 
 
-# Erzwinge den Pure-Python-Modus für alle asynchronen Bibliotheken.
+# Keep bundled asynchronous dependencies independent of optional native modules.
 os.environ["AIOHTTP_NO_EXTENSIONS"] = "1"
 os.environ["YARL_NO_EXTENSIONS"] = "1"
 os.environ["MULTIDICT_NO_EXTENSIONS"] = "1"
@@ -52,7 +52,10 @@ from pathlib import Path
 from galaxy.api.plugin import Plugin, create_and_run_plugin
 from galaxy.api.consts import Platform, LicenseType, LocalGameState, OSCompatibility
 from galaxy.api.types import NextStep, Authentication, Game, LicenseInfo, LocalGame
-from galaxy.api.errors import AuthenticationRequired, InvalidCredentials, BackendError
+from galaxy.api.errors import (
+    AuthenticationRequired, InvalidCredentials, BackendError,
+    BackendNotAvailable, BackendTimeout, NetworkError,
+)
 from galaxy.api.jsonrpc import ApplicationError
 
 from browser_auth import LocalBrowserAuthServer
@@ -66,8 +69,26 @@ with open(Path(__file__).parent / 'manifest.json', 'r') as f:
 
 SHOWCASE_API = 'https://www.indiegala.com/login_new/user_info'
 LIBRARY_CACHE_KEY = "indiegala_library_v1"
+LIBRARY_ACCOUNT_CACHE_KEY = "indiegala_library_account_v1"
 GAME_TIME_CACHE_KEY = "indiegala_game_time_v1"
 LOCAL_STATUS_REFRESH_SECONDS = 1.0
+ACCOUNT_RETRY_DELAYS_SECONDS = (1.0, 2.0)
+ACCOUNT_REQUEST_TIMEOUT_SECONDS = 5.0
+ACCOUNT_OPERATION_TIMEOUT_SECONDS = 25.0
+SESSION_CHECK_TIMEOUT_SECONDS = 6.0
+
+
+def _response_error(path, expected, value=None, *, missing=False, index=None):
+    # Record schema information, never account fields or response contents.
+    details = {
+        "reason": "invalid_schema",
+        "path": path,
+        "expected": expected,
+        "actual": "missing" if missing else type(value).__name__,
+    }
+    if index is not None:
+        details["index"] = index
+    return BackendError("IndieGala returned incomplete or invalid data; try again later", details)
 
 
 def _parse_user_response(text):
@@ -75,10 +96,72 @@ def _parse_user_response(text):
     try:
         data = json.loads(text)
     except (ValueError, TypeError) as error:
-        raise BackendError("IndieGala returned an invalid account response; try again later") from error
-    if not isinstance(data, dict) or data.get("status") == "failure":
-        raise BackendError("IndieGala could not provide account data; try again later")
+        raise BackendError(
+            "IndieGala returned an invalid account response; try again later",
+            {"reason": "invalid_json", "path": "$", "expected": "JSON object"},
+        ) from error
+    if not isinstance(data, dict):
+        raise _response_error("$", "object", data)
+    if data.get("status") == "failure":
+        raise BackendError(
+            "IndieGala could not provide account data; try again later",
+            {"reason": "api_failure", "path": "$"},
+        )
     return data
+
+
+def _parse_identity_response(text):
+    data = _parse_user_response(text)
+    user_id = data.get('_indiegala_user_id')
+    username = data.get('_indiegala_username')
+    if (
+        isinstance(user_id, bool)
+        or not isinstance(user_id, (str, int))
+        or not str(user_id).strip()
+    ):
+        raise _response_error(
+            "_indiegala_user_id", "nonempty string or integer", user_id,
+            missing='_indiegala_user_id' not in data,
+        )
+    if not isinstance(username, str) or not username.strip():
+        raise _response_error(
+            "_indiegala_username", "nonempty string", username,
+            missing='_indiegala_username' not in data,
+        )
+    return Authentication(str(user_id), username)
+
+
+def _parse_library_response(text):
+    data = _parse_user_response(text)
+    path = []
+    for field in ('showcase_content', 'content', 'user_collection'):
+        path.append(field)
+        value = data.get(field)
+        expected_type = list if field == 'user_collection' else dict
+        if not isinstance(value, expected_type):
+            raise _response_error(
+                '.'.join(path), expected_type.__name__, value, missing=field not in data,
+            )
+        data = value
+
+    result = []
+    for index, item in enumerate(data):
+        if not isinstance(item, dict):
+            raise _response_error('.'.join(path) + '[]', "object", item, index=index)
+        for field in ('prod_slugged_name', 'prod_name'):
+            value = item.get(field)
+            if not isinstance(value, str) or not value.strip():
+                raise _response_error(
+                    '.'.join(path) + '[].' + field, "nonempty string", value,
+                    missing=field not in item, index=index,
+                )
+        result.append(Game(
+            game_id=item['prod_slugged_name'],
+            game_title=item['prod_name'],
+            license_info=LicenseInfo(LicenseType.SinglePurchase),
+            dlcs=[],
+        ))
+    return result
 
 
 def write_crash_log(err_msg):
@@ -108,6 +191,9 @@ class IndieGalaPlugin(Plugin):
         self.install_root = load_install_root()
         self.browser_auth = LocalBrowserAuthServer(install_root=self.install_root)
         self._owned_game_titles = {}
+        self._authenticated_user_id = None
+        self._library_cache_account_id = None
+        self._has_complete_library_cache = False
         self._local_manager = IndieGalaLocalGameManager(
             lambda: self.install_root,
             self._library_for_local_detection,
@@ -163,9 +249,9 @@ class IndieGalaPlugin(Plugin):
             },
         )
 
-    # implement methods
     async def authenticate(self, stored_credentials=None):
         try:
+            self._authenticated_user_id = None
             if not stored_credentials:
                 return await self._build_browser_auth_step()
             if not self.install_root:
@@ -210,36 +296,22 @@ class IndieGalaPlugin(Plugin):
 
     async def get_owned_games(self):
         try:
-            text = await self.http_client.get(SHOWCASE_API)
-            data = _parse_user_response(text)
-            try:
-                games_json = data['showcase_content']['content']['user_collection']
-                if not isinstance(games_json, list):
-                    raise TypeError("Expected a collection list")
-                for item in games_json:
-                    if not isinstance(item, dict) or any(
-                        not isinstance(item.get(key), str) or not item[key].strip()
-                        for key in ('prod_slugged_name', 'prod_name')
-                    ):
-                        raise ValueError("Invalid collection entry")
-            except (KeyError, TypeError, ValueError) as error:
-                raise BackendError("IndieGala returned incomplete library data; try again later") from error
-            result = []
-            for game_json in games_json:
-                game = Game(
-                    game_id=game_json['prod_slugged_name'],
-                    game_title=game_json['prod_name'],
-                    license_info=LicenseInfo(LicenseType.SinglePurchase),
-                    dlcs=[]
-                )
-                result.append(game)
+            result = await self._fetch_account_data("library", _parse_library_response)
             self._owned_game_titles = {
                 game.game_id: game.game_title for game in result
             }
             self._store_library_cache()
             return result
-        except BackendError:
-            await self._check_session_after_backend_error()
+        except (BackendError, BackendNotAvailable, BackendTimeout, NetworkError) as error:
+            if error.data.get("session_verified") is True:
+                cached = self._cached_library_for_current_account()
+                if cached is not None:
+                    logging.warning(
+                        "IndieGala library refresh unavailable; retaining %d previously verified games. "
+                        "New library changes will be imported after a successful refresh.",
+                        len(cached),
+                    )
+                    return cached
             raise
         except Exception as e:
             write_crash_log("Fehler in get_owned_games")
@@ -247,36 +319,91 @@ class IndieGalaPlugin(Plugin):
 
     async def get_user_info(self):
         try:
-            text = await self.http_client.get(SHOWCASE_API)
-            try:
-                data = _parse_user_response(text)
-                user_id = data['_indiegala_user_id']
-                username = data['_indiegala_username']
-                if (
-                    isinstance(user_id, bool)
-                    or not isinstance(user_id, (str, int))
-                    or not str(user_id).strip()
-                    or not isinstance(username, str)
-                    or not username.strip()
-                ):
-                    raise ValueError("Missing account identity")
-                return Authentication(str(user_id), str(username))
-            except (json.JSONDecodeError, KeyError, TypeError, ValueError) as e:
-                logging.warning("IndieGala returned incomplete account identity data")
-                raise BackendError("IndieGala returned incomplete account data; try again later") from e
-        except BackendError:
-            await self._check_session_after_backend_error()
-            raise
+            authentication = await self._fetch_account_data("account", _parse_identity_response)
+            self._authenticated_user_id = authentication.user_id
+            return authentication
         except Exception as e:
             write_crash_log("Fehler in get_user_info")
             raise
 
+    async def _fetch_account_data(self, operation, parser):
+        try:
+            async with asyncio.timeout(ACCOUNT_OPERATION_TIMEOUT_SECONDS):
+                return await self._fetch_account_data_with_retries(operation, parser)
+        except asyncio.TimeoutError as error:
+            logging.warning("IndieGala %s recovery exceeded its time limit", operation)
+            raise BackendTimeout("IndieGala recovery timed out; try again later") from error
+
+    async def _fetch_account_data_with_retries(self, operation, parser):
+        attempts = len(ACCOUNT_RETRY_DELAYS_SECONDS) + 1
+        for attempt in range(1, attempts + 1):
+            try:
+                text = await asyncio.wait_for(
+                    self.http_client.get(SHOWCASE_API),
+                    timeout=ACCOUNT_REQUEST_TIMEOUT_SECONDS,
+                )
+                result = parser(text)
+                if attempt > 1:
+                    logging.info("IndieGala %s recovered on attempt %d/%d", operation, attempt, attempts)
+                return result
+            except (BackendError, BackendNotAvailable, BackendTimeout, NetworkError, asyncio.TimeoutError) as error:
+                if isinstance(error, asyncio.TimeoutError):
+                    failure = BackendTimeout("IndieGala account request timed out")
+                else:
+                    failure = error
+                details = failure.data
+                status = details.get("http_status")
+                logging.warning(
+                    "IndieGala %s attempt %d/%d failed: error=%s reason=%s "
+                    "path=%s expected=%s actual=%s index=%s http_status=%s",
+                    operation, attempt, attempts, type(failure).__name__,
+                    details.get("reason", "request_failed"), details.get("path", "-"),
+                    details.get("expected", "-"), details.get("actual", "-"),
+                    details.get("index", "-"), status if status is not None else "-",
+                )
+                retryable = status is None or status in (408, 425) or 500 <= status < 600
+                if retryable and attempt < attempts:
+                    await asyncio.sleep(ACCOUNT_RETRY_DELAYS_SECONDS[attempt - 1])
+                    continue
+                # Retention requires fresh session confirmation and a complete cache
+                # bound to the authenticated account; malformed data is never merged.
+                if await self._check_session_after_backend_error() is True:
+                    failure.data["session_verified"] = True
+                raise failure
+
     async def _check_session_after_backend_error(self):
-        authenticated = await self.http_client.is_session_authenticated()
+        try:
+            authenticated = await asyncio.wait_for(
+                self.http_client.is_session_authenticated(),
+                timeout=SESSION_CHECK_TIMEOUT_SECONDS,
+            )
+        except AuthenticationRequired:
+            raise
+        except (ApplicationError, asyncio.TimeoutError) as error:
+            # Preserve the original failure when session verification is unavailable.
+            logging.warning("IndieGala session verification unavailable: error=%s", type(error).__name__)
+            return
         if authenticated is False:
             logging.info("IndieGala website confirms that the stored session is no longer logged in")
             raise AuthenticationRequired()
         logging.info("IndieGala session is still logged in; account/library service is unavailable")
+        return authenticated
+
+    def _cached_library_for_current_account(self):
+        account_id = getattr(self, '_authenticated_user_id', None)
+        if (
+            not account_id
+            or not getattr(self, '_has_complete_library_cache', False)
+            or getattr(self, '_library_cache_account_id', None) != account_id
+        ):
+            return None
+        return [
+            Game(
+                game_id=game_id, game_title=title,
+                license_info=LicenseInfo(LicenseType.SinglePurchase), dlcs=[],
+            )
+            for game_id, title in self._owned_game_titles.items()
+        ]
 
     def _store_library_cache(self):
         self.persistent_cache.pop("credentials", None)
@@ -286,6 +413,13 @@ class IndieGalaPlugin(Plugin):
             separators=(",", ":"),
             sort_keys=True,
         )
+        account_id = self._authenticated_user_id
+        if account_id:
+            self.persistent_cache[LIBRARY_ACCOUNT_CACHE_KEY] = account_id
+        else:
+            self.persistent_cache.pop(LIBRARY_ACCOUNT_CACHE_KEY, None)
+        self._library_cache_account_id = account_id
+        self._has_complete_library_cache = True
         self.push_cache()
 
     def _load_library_cache(self):
@@ -303,10 +437,15 @@ class IndieGalaPlugin(Plugin):
             str(game_id): str(title)
             for game_id, title in payload.items()
             if isinstance(game_id, str)
-            and game_id
+            and game_id.strip()
             and isinstance(title, str)
-            and title
+            and title.strip()
         }
+        # Unbound legacy caches remain available for local detection, but cannot
+        # be used for retention until a fresh successful import binds the account.
+        account_id = self.persistent_cache.get(LIBRARY_ACCOUNT_CACHE_KEY)
+        self._library_cache_account_id = account_id if isinstance(account_id, str) and account_id.strip() else None
+        self._has_complete_library_cache = len(self._owned_game_titles) == len(payload)
 
     def _library_for_local_detection(self):
         if not self._owned_game_titles:

@@ -4,6 +4,21 @@ All notable changes to this plugin will be documented in this file.
 
 ---
 
+## Version 2.0.5-64bit
+
+### Overview for Version 2.0.5-64bit
+
+This maintenance release improves resilience to intermittent account and Showcase library failures, retains the last verified library during confirmed service problems, and adds more precise diagnostics for invalid responses.
+
+### Fixed in Version 2.0.5-64bit
+
+- **Bounded recovery:** Recoverable account and library failures now receive up to three attempts, with one- and two-second retry delays and a 25-second limit per operation, including the final session check. Explicit authentication failures, security blocks, and rate limits are not retried.
+- **Library continuity:** When a refresh fails but the website confirms an active session, the plugin can retain the last complete, validated library bound to the currently verified account. This requires a successful fresh import to establish the account binding. Expired or unverified sessions, account changes, damaged caches, and security blocks cannot use this fallback. Subsequent synchronization requests fresh data; library changes appear after the next successful refresh.
+- **Actionable diagnostics:** Failed attempts identify the affected schema field, expected and actual types, collection entry index, or HTTP status. Retained-library results are explicitly logged. These diagnostics exclude response contents, game titles, account identifiers, and cookie values.
+- **Error preservation:** An unavailable session check no longer replaces the original account or library failure with an unrelated verification error.
+
+---
+
 ## Version 2.0.4-64bit
 
 ### Overview for Version 2.0.4-64bit

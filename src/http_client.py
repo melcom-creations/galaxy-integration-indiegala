@@ -3,7 +3,7 @@ import json
 
 import aiohttp
 from galaxy.api.errors import AuthenticationRequired, BackendError, TooManyRequests, TemporaryBlocked
-from galaxy.http import create_client_session
+from galaxy.http import create_client_session, handle_exception
 from yarl import URL
 
 
@@ -29,9 +29,7 @@ class CookieJar(aiohttp.CookieJar):
 
 
 class HTTPClient(object):
-    """
-    Intended to store and track cookies and update them on each request
-    """
+    """Share refreshed cookies between account requests and website session checks."""
     def __init__(self, store_credentials):
         self.cookieJar = CookieJar()
         self.cookieJar.set_cookies_updated_callback(store_credentials)
@@ -41,15 +39,14 @@ class HTTPClient(object):
             cookie_jar=self.cookieJar, raise_for_status=False)
 
     async def get(self, url):
-        """
-        returns the url and updates the cookies
-        :param url:
-        :return:
-        """
         logging.debug('Calling HTTPClient.get with %s', url)
         return await self._request("GET", url)
 
     async def _request(self, method, url, **kwargs):
+        with handle_exception():
+            return await self._read_response(method, url, **kwargs)
+
+    async def _read_response(self, method, url, **kwargs):
         async with self.session.request(method, url, **kwargs) as response:
             if response.status == 401:
                 raise AuthenticationRequired()
@@ -58,7 +55,10 @@ class HTTPClient(object):
             if response.status == 403:
                 raise TemporaryBlocked("IndieGala denied the request; try again later")
             if response.status >= 400:
-                raise BackendError("IndieGala request failed (HTTP {})".format(response.status))
+                raise BackendError(
+                    "IndieGala request failed (HTTP {})".format(response.status),
+                    {"http_status": response.status},
+                )
             if response.status != 200:
                 raise BackendError("IndieGala returned an unexpected HTTP status")
             text = await response.text()
