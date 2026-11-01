@@ -257,8 +257,8 @@ class IndieGalaPlugin(Plugin):
             if not self.install_root:
                 logging.info("IndieGala games folder must be configured during connection")
                 return await self._build_browser_auth_step()
-            self.http_client.update_cookies(stored_credentials)
             try:
+                self.http_client.update_cookies(stored_credentials)
                 return await self.get_user_info()
             except AuthenticationRequired:
                 self.http_client.clear_cookies()

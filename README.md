@@ -90,6 +90,8 @@ The plugin reads only cookies belonging to `indiegala.com` from the temporary br
 
 Firefox uses WebDriver BiDi; Chromium-based browsers use their debugging protocol.
 
+Stored cookies retain their domain, path, security attributes, and expiration so website updates remain effective after a Galaxy restart. Existing saved sessions are upgraded automatically. This does not extend a session that IndieGala has expired or revoked.
+
 ### 💾 Data Storage and What Disconnect Removes
 
 | Data | Local location | Result of clicking **Disconnect** |

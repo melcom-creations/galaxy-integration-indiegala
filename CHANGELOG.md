@@ -4,6 +4,19 @@ All notable changes to this plugin will be documented in this file.
 
 ---
 
+## Version 2.0.6-64bit
+
+### Overview for Version 2.0.6-64bit
+
+Version 2.0.6 corrects session cookie handling during normal requests, browser sign-in, and Galaxy restarts.
+
+### Fixed in Version 2.0.6-64bit
+
+- **Outdated cookies could override renewed sessions:** Cookie storage now preserves domain, path, security attributes, and expiration. Server updates and deletions replace inferred copies from older storage, preventing obsolete cookies from taking precedence. Existing saved sessions remain supported, and restarting Galaxy does not extend cookie expiration.
+- **Browser sign-in could discard cookie updates:** The login handoff now includes cookies renewed during account verification. Firefox and Chromium-based browsers retain cookie scope and expiration when transferring the verified session to the plugin.
+
+---
+
 ## Version 2.0.5-64bit
 
 ### Overview for Version 2.0.5-64bit

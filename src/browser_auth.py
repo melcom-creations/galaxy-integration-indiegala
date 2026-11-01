@@ -12,14 +12,13 @@ import tempfile
 import time
 import winreg
 from dataclasses import dataclass
-from http.cookies import SimpleCookie
 from pathlib import Path
 from typing import Optional
 
 import aiohttp
 from aiohttp import web
-from yarl import URL
 
+from http_client import CookieJar
 from local_settings import InstallRootError, normalize_install_root
 
 
@@ -166,7 +165,7 @@ margin:0;padding:30px;}</style></head>
 
 @dataclass
 class BrowserAuthResult:
-    cookies: dict[str, str]
+    cookies: dict[str, object]
     user_id: str
     user_name: str
 
@@ -661,6 +660,9 @@ class ExternalBrowserBridge:
                     "domain": cookie.get("domain"),
                     "path": cookie.get("path"),
                     "secure": cookie.get("secure", False),
+                    "httpOnly": cookie.get("httpOnly", False),
+                    "sameSite": cookie.get("sameSite", ""),
+                    "expires": cookie.get("expiry", -1),
                 }
             )
         return converted
@@ -724,33 +726,9 @@ class ExternalBrowserBridge:
         session: aiohttp.ClientSession,
         browser_cookies: list[dict],
     ) -> Optional[BrowserAuthResult]:
-        cookie_jar = aiohttp.CookieJar()
-        stored_cookies: dict[str, str] = {}
-        for browser_cookie in browser_cookies:
-            name = browser_cookie.get("name")
-            value = browser_cookie.get("value")
-            domain = str(browser_cookie.get("domain", ""))
-            if (
-                not isinstance(name, str)
-                or not isinstance(value, str)
-                or not domain.lstrip(".").endswith("indiegala.com")
-            ):
-                continue
-
-            simple_cookie = SimpleCookie()
-            simple_cookie[name] = value
-            morsel = simple_cookie[name]
-            if domain:
-                morsel["domain"] = domain
-            path = browser_cookie.get("path")
-            if isinstance(path, str) and path:
-                morsel["path"] = path
-            if browser_cookie.get("secure"):
-                morsel["secure"] = True
-            cookie_jar.update_cookies(simple_cookie, URL("https://www.indiegala.com/"))
-            stored_cookies[name] = value
-
-        if not stored_cookies:
+        cookie_jar = CookieJar()
+        cookie_jar.import_browser_cookies(browser_cookies)
+        if not cookie_jar:
             return None
 
         timeout = aiohttp.ClientTimeout(total=12)
@@ -775,7 +753,7 @@ class ExternalBrowserBridge:
             return None
 
         return BrowserAuthResult(
-            cookies=stored_cookies,
+            cookies=cookie_jar.export_credentials(),
             user_id=str(user_id),
             user_name=str(user_name),
         )
